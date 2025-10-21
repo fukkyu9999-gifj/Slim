@@ -1,7 +1,7 @@
 {
   "name": "Slim",
   "version": "1.0.0",
-  "description": "Discord verification system bot with logging, vouch, and admin review (Discord.js v15)",
+  "description": "Discord verification system bot with logging, vouch, and admin review",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
@@ -15,7 +15,7 @@
   "engines": {
     "node": ">=18.0.0"
   },
-  "keywords": [],
+  "keywords": ["discord", "bot", "verification"],
   "author": "",
   "license": "MIT"
 }
