@@ -1,18 +1,11 @@
-// Keep-alive / web server (required by Render)
+// === BOT SETUP / KEEP ALIVE ===
+require('dotenv').config();
 const express = require('express');
 const app = express();
-
-app.get('/', (req, res) => {
-  res.send('✅ Bot is online and running!');
-});
-
+app.get('/', (req, res) => res.send('✅ Bot is online and running!'));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🌐 Keep-alive server running on port ${PORT}`));
-client.login(process.env.DISCORD_TOKEN);
 
-
-// === BOT SETUP ===
-require('dotenv').config();
 const {
     Client,
     GatewayIntentBits,
@@ -28,8 +21,9 @@ const {
     Events
 } = require('discord.js');
 
+// === BOT CLIENT ===
 const client = new Client({
-    intents: [ff
+    intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
@@ -38,22 +32,34 @@ const client = new Client({
 });
 
 // === CONFIG ===
-// Replace these IDs with your own if different (kept as you provided)
 const ADMIN_CHANNEL_ID = '1430039834835025920';     // Admin review channel (where staff sees submissions)
-const VERIFICATION_LOG_ID = '1342342913585053705';  // Verification log channel (where accepted entries go)
-const STAFF_LOG_CHANNEL_ID = '1358627364132884690'; // Staff action log channel (records which staff approved/denied)
+const VERIFICATION_LOG_ID = '1342342913585053705';  // Verification log channel (accepted entries go here)
+const STAFF_LOG_CHANNEL_ID = '1358627364132884690'; // Staff action log
 const VERIFIED_ROLE_IDS = ['1358619270472401031', '1369025309600518255']; // Roles to add on approval
-
 const GESTURES = ["peace sign ✌️", "thumbs up 👍", "hold up 3 fingers 🤟", "point to the ceiling ☝️", "make a heart with your hands ❤️"];
 
-// --- In-memory maps
+// In-memory maps
 const userActiveTicket = new Map();      // userId -> tempChannel
-const adminSubmissionMap = new Map();    // userId -> adminMessageId (the admin channel message for this submission)
+const adminSubmissionMap = new Map();    // userId -> { channelId, messageId }
 
-// === READY ===
+// === READY EVENT ===
 client.once(Events.ClientReady, () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
 });
+
+// === HELPERS ===
+async function safeFetchChannel(guild, id) {
+    try { return await guild.channels.fetch(id); } 
+    catch { return null; }
+}
+
+async function safeDeleteMessage(channel, messageId) {
+    try {
+        if (!channel) return;
+        const msg = await channel.messages.fetch(messageId).catch(() => null);
+        if (msg) await msg.delete().catch(() => {});
+    } catch { /* ignore */ }
+}
 
 // === UI COMPONENTS ===
 class VerifyButton {
@@ -93,52 +99,33 @@ client.on(Events.MessageCreate, async message => {
     }
 });
 
-// === HELPERS ===
-async function safeFetchChannel(guild, id) {
-    try {
-        return await guild.channels.fetch(id);
-    } catch (e) {
-        return null;
-    }
-}
-async function safeDeleteMessage(channel, messageId) {
-    try {
-        if (!channel) return;
-        const msg = await channel.messages.fetch(messageId).catch(() => null);
-        if (msg) await msg.delete().catch(() => {});
-    } catch (e) {
-        // ignore
-    }
-}
-
 // === INTERACTIONS ===
 client.on(Events.InteractionCreate, async interaction => {
     try {
         // ----- BUTTONS -----
         if (interaction.isButton()) {
 
-            // START VERIFICATION (persistent button)
+            // START VERIFICATION
             if (interaction.customId === 'start_verify') {
                 if (userActiveTicket.has(interaction.user.id)) {
-                    return await interaction.reply({ content: '❌ You already have an active verification ticket. Please finish or wait.', flags: 1 << 6 });
+                    return await interaction.reply({ content: '❌ You already have an active verification ticket.', ephemeral: true });
                 }
-                return await interaction.reply({ content: 'Select your verification method:', components: [VerificationSelect.create()], flags: 1 << 6 });
+                return await interaction.reply({ content: 'Select your verification method:', components: [VerificationSelect.create()], ephemeral: true });
             }
 
-            // UPLOAD FILES (user in temp channel clicks this to send files to admin)
+            // UPLOAD FILES
             if (interaction.customId === 'upload_files') {
                 const tempChannel = userActiveTicket.get(interaction.user.id);
                 if (!tempChannel || !tempChannel.filesCollected || tempChannel.filesCollected.length === 0) {
-                    return await interaction.reply({ content: '❌ Please upload files before pressing Upload.', flags: 1 << 6 });
+                    return await interaction.reply({ content: '❌ Please upload files before pressing Upload.', ephemeral: true });
                 }
 
                 const adminChannel = await safeFetchChannel(interaction.guild, ADMIN_CHANNEL_ID);
-                if (!adminChannel) return await interaction.reply({ content: '⚠️ Admin review channel not found.', flags: 1 << 6 });
+                if (!adminChannel) return await interaction.reply({ content: '⚠️ Admin review channel not found.', ephemeral: true });
 
-                // Prepare files array for a single message (Discord accepts up to 10 files per message)
-                const files = tempChannel.filesCollected.map(att => att.url);
+                const files = tempChannel.filesCollected.map(att => att.attachment || att.url);
 
-                // send single admin message with attachments + buttons
+                // Send submission to admin channel
                 const adminMsg = await adminChannel.send({
                     content: `<@${interaction.user.id}> submitted verification files:`,
                     files: files,
@@ -146,22 +133,15 @@ client.on(Events.InteractionCreate, async interaction => {
                         new ButtonBuilder().setCustomId(`approve_${interaction.user.id}`).setLabel('✅ Approve').setStyle(ButtonStyle.Success),
                         new ButtonBuilder().setCustomId(`deny_${interaction.user.id}`).setLabel('❌ Deny').setStyle(ButtonStyle.Danger)
                     )]
-                }).catch(err => {
-                    console.error('Failed to send to admin channel:', err);
-                    return null;
                 });
 
-                if (adminMsg) {
-                    adminSubmissionMap.set(interaction.user.id, { messageId: adminMsg.id, channelId: adminChannel.id });
-                }
+                adminSubmissionMap.set(interaction.user.id, { channelId: adminChannel.id, messageId: adminMsg.id });
 
-                await interaction.reply({ content: '✅ Submission sent to staff. This temp channel will self-destruct in 1 minute.', flags: 1 << 6 });
+                await interaction.reply({ content: '✅ Submission sent to staff. The temp channel will self-destruct in 1 minute.', ephemeral: true });
 
-                // schedule a deletion if not handled (still keep 1 minute so staff can act)
                 setTimeout(async () => {
                     if (userActiveTicket.has(interaction.user.id)) {
-                        const ch = userActiveTicket.get(interaction.user.id);
-                        await ch.delete().catch(() => {});
+                        await tempChannel.delete().catch(() => {});
                         userActiveTicket.delete(interaction.user.id);
                     }
                 }, 60_000);
@@ -169,22 +149,22 @@ client.on(Events.InteractionCreate, async interaction => {
                 return;
             }
 
-            // CLOSE TICKET (user)
+            // CLOSE TICKET
             if (interaction.customId === 'close_ticket') {
                 const tempChannel = userActiveTicket.get(interaction.user.id);
                 if (tempChannel) {
                     await tempChannel.delete().catch(() => {});
                     userActiveTicket.delete(interaction.user.id);
-                    return await interaction.reply({ content: '✅ Your verification ticket has been closed.', flags: 1 << 6 });
+                    return await interaction.reply({ content: '✅ Your verification ticket has been closed.', ephemeral: true });
                 } else {
-                    return await interaction.reply({ content: '❌ No active ticket to close.', flags: 1 << 6 });
+                    return await interaction.reply({ content: '❌ No active ticket to close.', ephemeral: true });
                 }
             }
 
-            // VOUCH MODAL (user)
+            // VOUCH MODAL
             if (interaction.customId === 'vouch_modal') {
                 const modal = new ModalBuilder()
-                    .setCustomId('vouch_submit') // modal id handled below
+                    .setCustomId('vouch_submit') // modal id
                     .setTitle('Submit Vouch');
 
                 modal.addComponents(new ActionRowBuilder().addComponents(
@@ -205,12 +185,11 @@ client.on(Events.InteractionCreate, async interaction => {
                 return await interaction.showModal(modal);
             }
 
-            // ADMIN: Approve / Deny buttons -> show staff modal
+            // STAFF MODAL: Approve / Deny
             if (interaction.customId.startsWith('approve_') || interaction.customId.startsWith('deny_')) {
                 const isApprove = interaction.customId.startsWith('approve_');
                 const targetUserId = interaction.customId.split('_')[1];
 
-                // Show modal for staff to input info / reason
                 const modal = new ModalBuilder()
                     .setCustomId(`${isApprove ? 'approve_modal_' : 'deny_modal_'}${targetUserId}`)
                     .setTitle(isApprove ? 'Approve Submission' : 'Deny Submission');
@@ -229,13 +208,12 @@ client.on(Events.InteractionCreate, async interaction => {
 
         // ----- SELECT MENU -----
         if (interaction.isStringSelectMenu() && interaction.customId === 'verification_type') {
-            // create temp channel
             const choice = interaction.values[0];
             const member = interaction.user;
             const guild = interaction.guild;
 
             if (userActiveTicket.has(member.id)) {
-                return await interaction.reply({ content: '❌ You already have an active verification ticket.', flags: 1 << 6 });
+                return await interaction.reply({ content: '❌ You already have an active verification ticket.', ephemeral: true });
             }
 
             const channel = await guild.channels.create({
@@ -269,13 +247,13 @@ client.on(Events.InteractionCreate, async interaction => {
                     break;
             }
 
-            // Close Ticket button on the temp channel message
+            // Close Ticket button
             actionButtons.push(new ButtonBuilder().setCustomId('close_ticket').setLabel('Close Ticket').setStyle(ButtonStyle.Secondary));
 
-            await interaction.reply({ content: `✅ Verification channel created: ${channel}`, flags: 1 << 6 });
+            await interaction.reply({ content: `✅ Verification channel created: ${channel}`, ephemeral: true });
             await channel.send({ content: msgContent, components: [new ActionRowBuilder().addComponents(actionButtons)] });
 
-            // Auto-delete after 5 minutes if nothing happens
+            // Auto-delete after 5 min if no submission
             setTimeout(async () => {
                 if (userActiveTicket.has(member.id)) {
                     const tmp = userActiveTicket.get(member.id);
@@ -283,7 +261,6 @@ client.on(Events.InteractionCreate, async interaction => {
                     await tmp.delete().catch(() => {});
                     userActiveTicket.delete(member.id);
 
-                    // inform admins about abandoned ticket
                     const admin = await safeFetchChannel(interaction.guild, ADMIN_CHANNEL_ID);
                     if (admin) await admin.send(`❌ <@${member.id}> opened a verification ticket but submitted nothing.`).catch(() => {});
                 }
@@ -296,23 +273,19 @@ client.on(Events.InteractionCreate, async interaction => {
         if (interaction.isModalSubmit()) {
             const cid = interaction.customId;
 
-            // === MODAL #1: VOUCH SUBMIT ===
+            // === VOUCH SUBMIT ===
             if (cid === 'vouch_submit') {
                 const name = interaction.fields.getTextInputValue('vouch_name');
                 const vouchText = interaction.fields.getTextInputValue('vouch_text');
                 const member = interaction.user;
                 const adminChannel = await safeFetchChannel(interaction.guild, ADMIN_CHANNEL_ID);
                 if (!adminChannel) {
-                    await interaction.reply({ content: '⚠️ Admin channel not found.', flags: 1 << 6 });
-                    return;
+                    return await interaction.reply({ content: '⚠️ Admin channel not found.', ephemeral: true });
                 }
 
                 const embed = new EmbedBuilder()
                     .setTitle('🗣️ New Vouch Submission')
-                    .addFields(
-                        { name: 'User', value: `<@${member.id}> (${name})` },
-                        { name: 'Vouch', value: vouchText }
-                    )
+                    .addFields([{ name: 'User', value: `<@${member.id}> (${name})` }, { name: 'Vouch', value: vouchText }])
                     .setTimestamp();
 
                 const adminMsg = await adminChannel.send({
@@ -321,16 +294,12 @@ client.on(Events.InteractionCreate, async interaction => {
                         new ButtonBuilder().setCustomId(`approve_${member.id}`).setLabel('✅ Approve').setStyle(ButtonStyle.Success),
                         new ButtonBuilder().setCustomId(`deny_${member.id}`).setLabel('❌ Deny').setStyle(ButtonStyle.Danger)
                     )]
-                }).catch(err => {
-                    console.error('Failed to send vouch to admin channel:', err);
-                    return null;
                 });
 
-                if (adminMsg) adminSubmissionMap.set(member.id, { channelId: adminChannel.id, messageId: adminMsg.id });
+                adminSubmissionMap.set(member.id, { channelId: adminChannel.id, messageId: adminMsg.id });
 
-                await interaction.reply({ content: '✅ Your vouch was submitted to staff. The temp channel will self-destruct in 1 minute.', flags: 1 << 6 });
+                await interaction.reply({ content: '✅ Your vouch was submitted to staff. The temp channel will self-destruct in 1 minute.', ephemeral: true });
 
-                // schedule temp channel deletion in 1 minute
                 setTimeout(async () => {
                     if (userActiveTicket.has(member.id)) {
                         const c = userActiveTicket.get(member.id);
@@ -342,80 +311,58 @@ client.on(Events.InteractionCreate, async interaction => {
                 return;
             }
 
-            // === MODAL #2 & #3: STAFF APPROVE / DENY MODAL SUBMITS ===
+            // === STAFF APPROVE / DENY ===
             if (cid.startsWith('approve_modal_') || cid.startsWith('deny_modal_')) {
                 const isApprove = cid.startsWith('approve_modal_');
                 const memberId = cid.split('_')[2];
                 const staff = interaction.user;
                 const staffText = interaction.fields.getTextInputValue('staff_text');
 
-                // Fetch member
                 const member = await interaction.guild.members.fetch(memberId).catch(() => null);
-                if (!member) {
-                    await interaction.reply({ content: '⚠️ Target user not found in guild.', flags: 1 << 6 });
-                    return;
-                }
+                if (!member) return await interaction.reply({ content: '⚠️ Target user not found.', ephemeral: true });
 
-                // If approve: assign roles and log
                 if (isApprove) {
                     for (const roleId of VERIFIED_ROLE_IDS) {
-                        try { await member.roles.add(roleId); } catch (e) { /* ignore role add errors */ }
+                        try { await member.roles.add(roleId); } catch {}
                     }
-                    // Log verification
                     const logChannel = await safeFetchChannel(interaction.guild, VERIFICATION_LOG_ID);
                     if (logChannel) await logChannel.send(`✅ Verified <@${member.id}> | Info: ${staffText}`).catch(() => {});
                 } else {
-                    // Deny: DM user the reason
                     await member.send(`❌ Your verification was denied.\nReason: ${staffText}`).catch(() => {});
                 }
 
-                // Staff action log (include staff who acted)
                 const staffLog = await safeFetchChannel(interaction.guild, STAFF_LOG_CHANNEL_ID);
                 if (staffLog) {
                     await staffLog.send(`${isApprove ? '✅ Approved' : '❌ Denied'} by <@${staff.id}> for <@${member.id}> | ${staffText}`).catch(() => {});
                 }
 
-                // --- INSTANT CLEANUP: delete admin submission message & delete temp channel immediately ---
+                // --- INSTANT CLEANUP ---
                 const submissionInfo = adminSubmissionMap.get(memberId);
                 if (submissionInfo) {
-                    // Try to fetch the admin channel and delete the message
                     const adminChannel = await safeFetchChannel(interaction.guild, submissionInfo.channelId);
                     await safeDeleteMessage(adminChannel, submissionInfo.messageId);
                     adminSubmissionMap.delete(memberId);
-                } else {
-                    // No tracked admin message found; try to search recent messages in admin channel and delete any matching to this user
-                    try {
-                        const adminChannel = await safeFetchChannel(interaction.guild, ADMIN_CHANNEL_ID);
-                        if (adminChannel) {
-                            const recent = await adminChannel.messages.fetch({ limit: 50 });
-                            const found = recent.find(m => m.content && m.content.includes(`<@${memberId}>`));
-                            if (found) await found.delete().catch(() => {});
-                        }
-                    } catch (e) { /* ignore */ }
                 }
 
-                // Delete temp channel immediately
                 if (userActiveTicket.has(memberId)) {
                     const tmp = userActiveTicket.get(memberId);
                     await tmp.delete().catch(() => {});
                     userActiveTicket.delete(memberId);
                 }
 
-                // Reply to staff interaction
-                await interaction.reply({ content: `✅ Submission ${isApprove ? 'approved' : 'denied'} and cleaned up.`, flags: 1 << 6 });
-                return;
+                return await interaction.reply({ content: `✅ Submission ${isApprove ? 'approved' : 'denied'} and cleaned up.`, ephemeral: true });
             }
         }
 
     } catch (err) {
         console.error('Interaction error:', err);
         if (interaction && !interaction.replied) {
-            await interaction.reply({ content: '⚠️ An error occurred. Please try again later.', flags: 1 << 6 }).catch(() => {});
+            await interaction.reply({ content: '⚠️ An error occurred. Please try again later.', ephemeral: true }).catch(() => {});
         }
     }
 });
 
-// === MESSAGE ATTACHMENTS: record uploads in temp channel ===
+// === MESSAGE ATTACHMENTS RECORDING ===
 client.on(Events.MessageCreate, async message => {
     if (message.author.bot) return;
     if (!userActiveTicket.has(message.author.id)) return;
@@ -424,6 +371,9 @@ client.on(Events.MessageCreate, async message => {
     if (!tempChannel) return;
 
     if (message.attachments.size > 0) {
-        // store attachments (MessageAttachment-like objects) as { url, name }
-        const attachments = [];
-        for (const att of m
+        tempChannel.filesCollected = tempChannel.filesCollected || [];
+        for (const att of message.attachments.values()) {
+            tempChannel.filesCollected.push(att);
+        }
+    }
+});
