@@ -1,5 +1,5 @@
 {
-  "name": "discord-verification-bot",
+  "name": "Slim",
   "version": "1.0.0",
   "description": "Discord verification system bot with logging, vouch, and admin review",
   "main": "index.js",
