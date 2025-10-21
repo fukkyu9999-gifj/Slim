@@ -1,0 +1,21 @@
+{
+  "name": "discord-verification-bot",
+  "version": "1.0.0",
+  "description": "Discord verification system bot with logging, vouch, and admin review",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"No test specified\" && exit 0"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT"
+}
